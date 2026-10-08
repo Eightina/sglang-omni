@@ -16,8 +16,11 @@ from sglang_omni.models.minicpm_o.payload_types import (
 )
 from sglang_omni.models.minicpm_o.routing import (
     DECODE_STAGE,
+    STREAMING_TALKER_STAGE,
     THINKER_STAGE,
     payload_with_state,
+    should_generate_audio_output,
+    should_use_streaming_talker,
 )
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -264,26 +267,52 @@ def make_thinker_scheduler_adapters(
 
 
 def build_thinker_stream_output(
-    request_id: str, req_data: SGLangARRequestData, req_output: RequestOutput
+    request_id: str,
+    req_data: SGLangARRequestData,
+    req_output: RequestOutput,
+    *,
+    enable_talker_partial_start: bool = False,
 ) -> list[OutgoingMessage]:
-    """Emit one token for streaming requests after a complete prefill or decode."""
+    """Emit text and optional token/hidden pairs after a completed thinker step."""
     if req_data.req.inflight_middle_chunks > 0 or req_output.data is None:
         return []
     else:
         pass
-    if not req_data.stage_payload.request.params.get("stream", False):
-        return []
+    token_id = int(req_output.data)
+    messages: list[OutgoingMessage] = []
+    if req_data.stage_payload.request.params.get("stream", False):
+        # note (MayDomine): stream transport accepts tensors, not scalar ids.
+        messages.append(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=torch.tensor([token_id], dtype=torch.long),
+                target=DECODE_STAGE,
+                metadata={"token_id": token_id},
+            )
+        )
     else:
         pass
-
-    token_id = int(req_output.data)
-    # note (MayDomine): stream transport accepts tensors, not scalar ids.
-    return [
-        OutgoingMessage(
-            request_id=request_id,
-            type="stream",
-            data=torch.tensor([token_id], dtype=torch.long),
-            target=DECODE_STAGE,
-            metadata={"token_id": token_id},
+    hidden = (
+        req_output.extra.pop("talker_stream_hidden", None)
+        if req_output.extra is not None
+        else None
+    )
+    if (
+        enable_talker_partial_start
+        and should_generate_audio_output(req_data.stage_payload)
+        and should_use_streaming_talker(req_data.stage_payload)
+        and isinstance(hidden, torch.Tensor)
+    ):
+        messages.append(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=hidden.reshape(1, -1),
+                target=STREAMING_TALKER_STAGE,
+                metadata={"token_id": token_id},
+            )
         )
-    ]
+    else:
+        pass
+    return messages

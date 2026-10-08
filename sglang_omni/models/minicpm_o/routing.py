@@ -13,6 +13,7 @@ AUDIO_STAGE = "audio_encoder"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker"
+STREAMING_TALKER_STAGE = "streaming_talker"
 CODE2WAV_STAGE = "code2wav"
 
 
@@ -42,6 +43,18 @@ def should_generate_audio_output(
     )
     modalities = output_modalities(request)
     return modalities is None or "audio" in modalities
+
+
+def should_use_streaming_talker(payload: StagePayload) -> bool:
+    """Return whether this request explicitly enables experimental early speech."""
+    params = payload.request.params or {}
+    stage_params = params.get("stage_params")
+    if not isinstance(stage_params, dict):
+        return False
+    else:
+        pass
+    streaming_params = stage_params.get(STREAMING_TALKER_STAGE)
+    return isinstance(streaming_params, dict) and bool(streaming_params.get("enabled"))
 
 
 def code2wav_reference_audio(payload: StagePayload) -> bytes | None:
@@ -94,10 +107,15 @@ def resolve_preprocessing_next_stages(
 ) -> list[str]:
     """Select encoder branches; request_id is required by the routing interface."""
     state = MiniCPMOPipelineState.from_dict(output.data)
-    return [
+    next_stages = [
         *encoder_stages_with_model_inputs(state.encoder_inputs),
         THINKER_STAGE,
     ]
+    if should_use_streaming_talker(output):
+        next_stages.append(STREAMING_TALKER_STAGE)
+    else:
+        pass
+    return next_stages
 
 
 def resolve_thinker_wait_sources(
@@ -136,6 +154,15 @@ def project_preprocessing_to_thinker(payload: StagePayload) -> StagePayload:
     return payload_with_state(payload, projected)
 
 
+def project_preprocessing_to_streaming_talker(payload: StagePayload) -> StagePayload:
+    """Send request metadata early; thinker conditions arrive as stream chunks."""
+    state = MiniCPMOPipelineState.from_dict(payload.data)
+    projected = MiniCPMOPipelineState(
+        prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
+    )
+    return payload_with_state(payload, projected)
+
+
 def project_encoder_to_thinker(payload: StagePayload) -> StagePayload:
     state = MiniCPMOPipelineState.from_dict(payload.data)
     if len(state.encoder_outs) != 1:
@@ -155,10 +182,25 @@ def project_encoder_to_thinker(payload: StagePayload) -> StagePayload:
 def resolve_thinker_next_stages(request_id: str, output: StagePayload) -> list[str]:
     """Select output branches; request_id is required by the routing interface."""
     if should_generate_audio_output(output):
-        return [DECODE_STAGE, TALKER_STAGE]
+        if should_use_streaming_talker(output):
+            return [DECODE_STAGE]
+        else:
+            return [DECODE_STAGE, TALKER_STAGE]
     else:
         pass
     return [DECODE_STAGE]
+
+
+def resolve_thinker_stream_done_targets(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    """Close the experimental condition stream only for opted-in requests."""
+    targets = [DECODE_STAGE]
+    if should_use_streaming_talker(output):
+        targets.append(STREAMING_TALKER_STAGE)
+    else:
+        pass
+    return targets
 
 
 def resolve_terminal_stages(request: OmniRequest) -> list[str]:
@@ -174,12 +216,17 @@ def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
     state = MiniCPMOPipelineState.from_dict(payload.data)
     thinker_out = state.thinker_out if isinstance(state.thinker_out, dict) else {}
     extra = thinker_out.get("extra_model_outputs") or {}
+    hidden_states_seq = extra.get("hidden_states_seq")
+    if hidden_states_seq is None:
+        hidden_states_seq = []
+    else:
+        pass
     projected = MiniCPMOPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         thinker_out={
             "output_ids": list(thinker_out.get("output_ids") or []),
             "extra_model_outputs": {
-                "hidden_states_seq": extra.get("hidden_states_seq") or [],
+                "hidden_states_seq": hidden_states_seq,
             },
         },
     )

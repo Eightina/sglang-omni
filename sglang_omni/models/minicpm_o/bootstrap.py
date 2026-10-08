@@ -115,6 +115,9 @@ def create_thinker_scheduler(
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
     speech_enabled: bool = False,
+    enable_talker_cuda_ipc: bool = False,
+    enable_talker_start_measurement: bool = False,
+    enable_talker_partial_start: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a thinker scheduler with optional hidden-state capture for speech."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -189,13 +192,20 @@ def create_thinker_scheduler(
     def _should_emit_hidden(request: SchedulerRequest) -> bool:
         return should_generate_audio_output(request.data.stage_payload)
 
+    tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     output_proc = SGLangOutputProcessor(
         capture_hidden=speech_enabled,
         should_emit_hidden=_should_emit_hidden if speech_enabled else None,
     )
-    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc)
-
-    tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
+    model_runner = MiniCPMOThinkerModelRunner(
+        model_worker,
+        output_proc,
+        enable_talker_cuda_ipc=enable_talker_cuda_ipc,
+        enable_talker_start_measurement=enable_talker_start_measurement,
+        enable_talker_partial_start=enable_talker_partial_start,
+        tts_bos_token_id=tokenizer.convert_tokens_to_ids("<|tts_bos|>"),
+        tts_eos_token_id=tokenizer.convert_tokens_to_ids("<|tts_eos|>"),
+    )
     request_builder, result_adapter = make_thinker_scheduler_adapters(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,
@@ -211,7 +221,14 @@ def create_thinker_scheduler(
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
-        stream_output_builder=build_thinker_stream_output,
+        stream_output_builder=lambda request_id, req_data, req_output: (
+            build_thinker_stream_output(
+                request_id,
+                req_data,
+                req_output,
+                enable_talker_partial_start=enable_talker_partial_start,
+            )
+        ),
         abort_callback=model_runner.reset_request,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,

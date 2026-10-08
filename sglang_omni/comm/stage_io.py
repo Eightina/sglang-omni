@@ -215,6 +215,27 @@ def payload_has_cuda_tensor(payload: StagePayload) -> bool:
     return contains_cuda_tensor(payload)
 
 
+def materialize_payload_data_on_cpu(payload: StagePayload) -> StagePayload:
+    """将 payload data 内的 accelerator tensor 显式落到 CPU，供 SHM 回退使用。"""
+    if not isinstance(payload, StagePayload):
+        raise TypeError(
+            f"payload CPU materialization requires StagePayload, got "
+            f"{type(payload).__name__}"
+        )
+    else:
+        pass
+    data_without_tensors, tensors = extract_tensors(payload.data)
+    cpu_tensors = {
+        path: tensor.to("cpu") if tensor.is_cuda else tensor
+        for path, tensor in tensors.items()
+    }
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=restore_tensors(data_without_tensors, cpu_tensors),
+    )
+
+
 def serialize_direct_cuda_ipc_payload(
     payload: StagePayload,
 ) -> DirectCudaIpcPayloadRef:

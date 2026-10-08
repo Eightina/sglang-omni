@@ -1155,6 +1155,50 @@ def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_stage_materializes_cuda_payload_before_shm_relay(monkeypatch) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_intra_node_transport",
+        lambda: TransportKind.SHM,
+        raising=False,
+    )
+    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
+    materialized: list[object] = []
+
+    def materialize_on_cpu(payload):
+        materialized.append(payload)
+        return payload
+
+    monkeypatch.setattr(
+        stage_io, "materialize_payload_data_on_cpu", materialize_on_cpu
+    )
+
+    async def run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="thinker",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"talker": "inproc://talker"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"talker"},
+            stage_gpu_ids={"talker": (0,)},
+        )
+        payload = make_stage_payload(request_id="req-shm-cuda", data={"x": "cuda"})
+        await sender.send_to_stage("req-shm-cuda", "talker", payload)
+
+        assert materialized
+        _, _, msg = control_plane.sent_to_stage[0]
+        assert msg.data_ref["_type"] == "DataRef"
+        assert relay.storage
+
+    asyncio.run(run())
+
+
 def test_stage_uses_relay_when_direct_cuda_payload_is_reexported(monkeypatch) -> None:
     monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
 

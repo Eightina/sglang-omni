@@ -23,7 +23,7 @@ from typing import Awaitable, Callable, Literal
 import torch
 
 from sglang_omni.comm import stage_io
-from sglang_omni.comm.data_ref import DataKind, DataRef
+from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
 from sglang_omni.comm.kv_transfer import KVPageTransfer
 from sglang_omni.comm.router import CommRouter
@@ -1674,6 +1674,15 @@ class Stage:
         transport_kind, relay = self.comm.router.relay_for_payload(
             target, projected_payload
         )
+        if (
+            transport_kind is TransportKind.SHM
+            and stage_io.payload_has_cuda_tensor(projected_payload)
+        ):
+            projected_payload = stage_io.materialize_payload_data_on_cpu(
+                projected_payload
+            )
+        else:
+            pass
         await self.comm.send_payload(
             relay=relay,
             control_plane=self.control_plane,

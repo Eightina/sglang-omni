@@ -19,18 +19,29 @@ PKG = "sglang_omni.models.minicpm_o"
 THINKER_STAGE = "thinker"
 
 
-def preprocessing_stage(*, process: str) -> StageConfig:
+def preprocessing_stage(
+    *, process: str, streaming_talker_enabled: bool = False
+) -> StageConfig:
+    next_stages = ["image_encoder", "audio_encoder", "thinker"]
+    project_payload = {
+        "image_encoder": f"{PKG}.routing.project_preprocessing_to_image_encoder",
+        "audio_encoder": f"{PKG}.routing.project_preprocessing_to_audio_encoder",
+        "thinker": f"{PKG}.routing.project_preprocessing_to_thinker",
+    }
+    if streaming_talker_enabled:
+        next_stages.append("streaming_talker")
+        project_payload["streaming_talker"] = (
+            f"{PKG}.routing.project_preprocessing_to_streaming_talker"
+        )
+    else:
+        pass
     return StageConfig(
         name="preprocessing",
         process=process,
         factory_path=f"{PKG}.stages.create_preprocessing_executor",
-        next=["image_encoder", "audio_encoder", "thinker"],
+        next=next_stages,
         route_fn=f"{PKG}.routing.resolve_preprocessing_next_stages",
-        project_payload={
-            "image_encoder": (f"{PKG}.routing.project_preprocessing_to_image_encoder"),
-            "audio_encoder": (f"{PKG}.routing.project_preprocessing_to_audio_encoder"),
-            "thinker": (f"{PKG}.routing.project_preprocessing_to_thinker"),
-        },
+        project_payload=project_payload,
     )
 
 
@@ -64,7 +75,13 @@ def thinker_stage(
         name="thinker",
         process=process,
         factory_path=f"{PKG}.stages.create_sglang_thinker_executor_from_config",
-        factory=FactoryArgs(max_seq_len=8192, enable_async_decode=True),
+        factory=FactoryArgs(
+            max_seq_len=8192,
+            enable_async_decode=True,
+            enable_talker_cuda_ipc=False,
+            enable_talker_start_measurement=False,
+            enable_talker_partial_start=False,
+        ),
         gpu=gpu,
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         wait_for_fn=f"{PKG}.routing.resolve_thinker_wait_sources",
@@ -73,7 +90,14 @@ def thinker_stage(
         route_fn=(
             f"{PKG}.routing.resolve_thinker_next_stages" if speech_enabled else None
         ),
-        stream_to=["decode"],
+        stream_to=(
+            ["decode", "streaming_talker"] if speech_enabled else ["decode"]
+        ),
+        stream_done_to_fn=(
+            f"{PKG}.routing.resolve_thinker_stream_done_targets"
+            if speech_enabled
+            else None
+        ),
         project_payload={
             "decode": f"{PKG}.routing.project_thinker_to_decode",
             **(
@@ -106,6 +130,25 @@ def talker_stage(*, gpu: int, process: str) -> StageConfig:
         project_payload={
             "code2wav": f"{PKG}.routing.project_talker_to_code2wav",
         },
+    )
+
+
+def streaming_talker_stage(*, gpu: int, process: str) -> StageConfig:
+    return StageConfig(
+        name="streaming_talker",
+        process=process,
+        factory_path=f"{PKG}.streaming_talker.create_streaming_talker_executor",
+        factory=FactoryArgs(
+            enable_talker_partial_start=False,
+            text_chunk_tokens=8,
+            start_min_tokens=16,
+        ),
+        gpu=gpu,
+        next="code2wav",
+        project_payload={
+            "code2wav": f"{PKG}.routing.project_talker_to_code2wav",
+        },
+        can_accept_stream_before_payload=True,
     )
 
 
@@ -146,7 +189,7 @@ def text_stages() -> list[StageConfig]:
 
 def speech_stages() -> list[StageConfig]:
     return [
-        preprocessing_stage(process="pipeline"),
+        preprocessing_stage(process="pipeline", streaming_talker_enabled=True),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
         thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
         image_encoder_stage(process="pipeline", gpu=0),
@@ -154,6 +197,8 @@ def speech_stages() -> list[StageConfig]:
         decode_stage(process="pipeline"),
         # note (MayDomine): each engine requires a separate process-global TP group.
         talker_stage(gpu=0, process="talker"),
+        # note (MayDomine): streaming TTS stays isolated from the normal talker.
+        streaming_talker_stage(gpu=0, process="streaming_talker"),
         # note (MayDomine): vocoding must not block the thinker's event loop.
         code2wav_stage(gpu=0, process="code2wav"),
     ]

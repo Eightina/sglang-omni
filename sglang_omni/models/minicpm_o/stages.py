@@ -290,6 +290,9 @@ def create_sglang_thinker_executor_from_config(
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
     speech_enabled: bool = False,
+    enable_talker_cuda_ipc: bool = False,
+    enable_talker_start_measurement: bool = False,
+    enable_talker_partial_start: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the MiniCPM-o thinker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -331,6 +334,9 @@ def create_sglang_thinker_executor_from_config(
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         speech_enabled=speech_enabled,
+        enable_talker_cuda_ipc=enable_talker_cuda_ipc,
+        enable_talker_start_measurement=enable_talker_start_measurement,
+        enable_talker_partial_start=enable_talker_partial_start,
     )
     logger.info(
         f"sglang_ar_started stage=thinker gpu_id={gpu_id} "

@@ -40,7 +40,13 @@ def build_talker_request(
     thinker_out = state.thinker_out if isinstance(state.thinker_out, dict) else {}
     output_ids = [int(t) for t in (thinker_out.get("output_ids") or [])]
     extra = thinker_out.get("extra_model_outputs") or {}
-    hidden_seq = extra.get("hidden_states_seq") or []
+    raw_hidden_seq = extra.get("hidden_states_seq")
+    if isinstance(raw_hidden_seq, torch.Tensor):
+        hidden_seq: torch.Tensor | list[torch.Tensor] = raw_hidden_seq
+    elif isinstance(raw_hidden_seq, (list, tuple)):
+        hidden_seq = list(raw_hidden_seq)
+    else:
+        hidden_seq = []
 
     full_sequence = [int(t) for t in prompt_ids] + output_ids
     prompt_len = len(prompt_ids)
@@ -68,7 +74,12 @@ def build_talker_request(
         )
     else:
         pass
-    end = min(end, hidden_base + len(hidden_seq))
+    hidden_count = (
+        int(hidden_seq.shape[0])
+        if isinstance(hidden_seq, torch.Tensor)
+        else len(hidden_seq)
+    )
+    end = min(end, hidden_base + hidden_count)
     if end <= start:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
@@ -76,7 +87,10 @@ def build_talker_request(
         pass
 
     tokens = torch.tensor(full_sequence[start:end], dtype=torch.long)
-    hidden = torch.stack([hidden_seq[i - hidden_base] for i in range(start, end)])
+    if isinstance(hidden_seq, torch.Tensor):
+        hidden = hidden_seq[start - hidden_base : end - hidden_base]
+    else:
+        hidden = torch.stack([hidden_seq[i - hidden_base] for i in range(start, end)])
     return {"tts_token_ids": tokens, "tts_hidden": hidden}
 
 
